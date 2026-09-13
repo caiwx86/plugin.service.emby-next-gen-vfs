@@ -1,0 +1,86 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: '是否创建草稿（draft）Release'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: '是否标记为预发布版'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ----- 1. 解析 addon.xml 获取 id 和 version -----
+      - name: 解析元数据
+        id: parse_metadata
+        run: |
+          python -c "
+          import xml.etree.ElementTree as ET
+          import os
+          tree = ET.parse('addon.xml')
+          root = tree.getroot()
+          addon_id = root.get('id')
+          version = root.get('version')
+          if not addon_id:
+              raise SystemExit('addon.xml 中未找到 id 属性')
+          if not version:
+              raise SystemExit('addon.xml 中未找到 version 属性')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'ID={addon_id}\n')
+              f.write(f'VERSION={version}\n')
+          "
+        shell: bash
+
+      # ----- 2. 显示解析到的信息（调试） -----
+      - name: 显示信息
+        run: |
+          echo "插件 ID: ${{ steps.parse_metadata.outputs.ID }}"
+          echo "版本号: ${{ steps.parse_metadata.outputs.VERSION }}"
+
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ steps.parse_metadata.outputs.ID }}
+
+      # ----- 3. 打包，文件名 = ID-版本号.zip（连接符可自定义） -----
+      - name: 打包文件
+        run: |
+          zip -r "${{ steps.parse_metadata.outputs.ID }}-${{ steps.parse_metadata.outputs.VERSION }}.zip" \
+          "${{ steps.parse_metadata.outputs.ID }}" \
+          -x "${{ steps.parse_metadata.outputs.ID }}/.git/*" \
+          -x "${{ steps.parse_metadata.outputs.ID }}/.github/*" \
+          -x "${{ steps.parse_metadata.outputs.ID }}/.gitignore"
+        shell: bash
+
+      # ----- 4. 创建 Release 并上传附件 -----
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.parse_metadata.outputs.VERSION }}
+          name: v${{ steps.parse_metadata.outputs.VERSION }}
+          body: |
+            自动发布版本 v${{ steps.parse_metadata.outputs.VERSION }}
+            插件 ID: ${{ steps.parse_metadata.outputs.ID }}
+          files: ${{ steps.parse_metadata.outputs.ID }}-${{ steps.parse_metadata.outputs.VERSION }}.zip
+          draft: ${{ github.event.inputs.draft || false }}
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
